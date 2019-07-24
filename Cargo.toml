@@ -1,0 +1,16 @@
+[package]
+name = "github-client"
+version = "0.0.1"
+authors = ["Dennis Sivia <dennis.sivia@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+probot = {path = "../probot"}
+bytes = "0.4"
+futures = "0.1"
+env_logger = "*"
+
+serde = "1.0"
+serde_json = "1.0"
+serde_derive = "1.0"
+json = "*"

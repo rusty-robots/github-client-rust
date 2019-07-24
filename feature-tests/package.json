@@ -1,0 +1,10 @@
+{
+  "name": "browser-tests",
+  "version": "1.0.0",
+  "description": "Browser tests for this app",
+  "main": "index.js",
+  "license": "GPL-3.0-or-later",
+  "devDependencies": {
+    "frisby": "^2.1.2"
+  }
+}
