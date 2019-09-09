@@ -10,3 +10,6 @@ Cargo.lock
 **/*.rs.bk
 
 feature-tests/node_modules
+*.pem
+.env
+server.rb
