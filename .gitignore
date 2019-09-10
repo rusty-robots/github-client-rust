@@ -11,5 +11,6 @@ Cargo.lock
 
 feature-tests/node_modules
 *.pem
+*.json
 .env
 server.rb

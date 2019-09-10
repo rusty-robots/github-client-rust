@@ -1,18 +1,21 @@
 use futures::{future, Future, Stream};
-use gotham::handler::{HandlerError, HandlerFuture, IntoHandlerError};
+use gotham::handler::{HandlerFuture, IntoHandlerError};
 use gotham::helpers::http::response::create_empty_response;
 use gotham::router::builder::{build_simple_router, DefineSingleRoute, DrawRoutes};
 use gotham::router::Router;
 use gotham::state::{FromState, State};
 use hyper::{Body, HeaderMap, Method, Response, StatusCode, Uri, Version};
 
+use futures::future::{lazy, poll_fn};
+use tokio_threadpool::{blocking, ThreadPool};
+
+use serde_json;
+
 use std::env;
 use std::option::Option;
 
-//use openssl;
 use openssl::hash::MessageDigest;
 use openssl::memcmp;
-use openssl::pkey::PKey;
 use openssl::sign::Signer;
 
 const HELLO_WORLD: &'static str = "Hello World!";
@@ -29,25 +32,6 @@ fn print_request_elements(state: &State) {
     println!("Headers: {:?}", headers);
 }
 
-/// Extracts the elements of the POST request and prints them
-fn post_handler(mut state: State) -> Box<HandlerFuture> {
-    print_request_elements(&state);
-
-    let f = Body::take_from(&mut state)
-        .concat2()
-        .then(|full_body| match full_body {
-            Ok(valid_body) => {
-                let body_content = String::from_utf8(valid_body.to_vec()).unwrap();
-                println!("Body: {}", body_content);
-                let res = create_empty_response(&state, StatusCode::OK);
-                future::ok((state, res))
-            }
-            Err(e) => future::err((state, e.into_handler_error())),
-        });
-
-    Box::new(f)
-}
-
 /// Show the GET request components by printing them.
 fn get_handler(state: State) -> (State, Response<Body>) {
     print_request_elements(&state);
@@ -58,15 +42,6 @@ fn get_handler(state: State) -> (State, Response<Body>) {
 
 fn home(state: State) -> (State, Response<Body>) {
     get_handler(state)
-}
-
-enum GithubEvent {
-    Integration,
-    Installation,
-}
-
-enum GithubEventAction {
-    Created,
 }
 
 // TODO: make this return Result<GithubEvent, HeaderMapErrorThing>
@@ -90,7 +65,7 @@ fn get_payload_signature(state: &State) -> Option<String> {
 
 ///  Example signature header
 ///  "x-hub-signature": "sha1=4b4a1c9a70dc40caf22099fb2d62a283dedd4614"
-fn verify_payload_signature(signature: Option<String>, secret: String, body: String) -> bool {
+fn verify_payload_signature(signature: &Option<String>, secret: &String, body: &String) -> bool {
     let secret = secret.as_bytes();
     let body = body.as_bytes();
 
@@ -109,12 +84,10 @@ fn verify_payload_signature(signature: Option<String>, secret: String, body: Str
             signer.update(body).unwrap();
             let hmac = signer.sign_to_vec().unwrap();
 
-            println!("signature 1 : {:?}", sig);
-            println!("signature 2: {:?}", sighex);
-            println!("signature 3: {:?}", sigbytes);
+            println!("signature: sha1={:?}", sighex);
+            println!("bytes: {:?}", sigbytes);
             println!("hmac is: {:?}", hmac);
-
-            println!("hmac len: {}, sig len: {}", hmac.len(), sigbytes.len());
+            //            println!("hmac len: {}, sig len: {}", hmac.len(), sigbytes.len());
 
             let valid = memcmp::eq(&hmac, &sigbytes);
             println!("validity is: {:?}", valid);
@@ -126,32 +99,110 @@ fn verify_payload_signature(signature: Option<String>, secret: String, body: Str
 
 /// Installation Integration
 /// Installation
+///
+/// When creating a new push with branch we expect:
+/// * create ref: branch
+/// * push to branch
+/// * check_run for push
+///  Process:
+/// get JWT
+/// get Install token
+/// create check-run
+fn handle_push_event(
+    push: octokit::PushPayload,
+) -> impl Future<Item = octokit::CheckRun, Error = Box<dyn std::error::Error + 'static>> {
+    future::ok(1)
+        .and_then(|_| {
+            let key_path = env::var("GITHUB_PRIVATE_KEY_PATH")
+                .expect("GITHUB_PRIVATE_KEY_PATH is required but not set.");
+            let app_id = env::var("GITHUB_APP_ID").expect("GITHUB_APP_ID is required but not set.");
+            println!("calling create jwt");
+            future::ok(octokit::create_jwt(&key_path, &app_id).unwrap())
+        })
+        .and_then(|jwt| {
+            let installation_id = 1839142;
+            println!("calling create installation token");
+            future::ok(octokit::create_installation_token(jwt, installation_id).unwrap())
+        })
+        .and_then(|token| {
+            let nwo = env::var("PLAYGROUND_NWO").expect("PLAYGROUND_NWO is required but not set.");
+            println!("calling create check run");
+            future::ok(octokit::create_check_run(&token, &nwo, push.after).unwrap())
+        })
+}
 
 fn webhook_handler(mut state: State) -> Box<HandlerFuture> {
-    let event_type = extract_event_type(&state);
-    let signature = get_payload_signature(&state);
-    // FIXME placeholders until stuff works
-    let secret =
-        env::var("GITHUB_WEBHOOK_SECRET").expect("GITHUB_WEBHOOK_SECRET is required but not set.");
+    print_request_elements(&state);
+    //  may outlive borrowed value `event_type`, ...
+    //  let event_type = extract_event_type(&state).expect("Unable to extract event type (X-EVENT-TYPE)");
+    //  let secret = env::var("GITHUB_WEBHOOK_SECRET")
+    //  let signature = get_payload_signature(&state);
 
     let f = Body::take_from(&mut state)
         .concat2()
         .then(|full_body| match full_body {
             Ok(valid_body) => {
                 // parse body
+                let secret = env::var("GITHUB_WEBHOOK_SECRET")
+                    .expect("GITHUB_WEBHOOK_SECRET is required but not set.");
+                let signature = get_payload_signature(&state);
                 let body_content = String::from_utf8(valid_body.to_vec()).unwrap();
 
                 // validate  signature
-                let signature_is_valid = verify_payload_signature(signature, secret, body_content);
+                let signature_is_valid =
+                    verify_payload_signature(&signature, &secret, &body_content);
                 if signature_is_valid {
                     println!("YESS, signature is valid");
                 } else {
                     println!("BOO, signature is NOT valid");
                 }
                 // do stuff
+                let event_type = extract_event_type(&state)
+                    .expect("Unable to extract event type (X-EVENT-TYPE)");
+                println!("Event type is: {} ", event_type);
+                match event_type.as_str() {
+                    "installation" => {
+                        println!("{}", body_content);
+                        println!("Processing installation webhook");
+                        let data: octokit::InstallationPayload =
+                            serde_json::from_str(body_content.as_str()).unwrap();
+
+                        println!("parsed data: {:?}", data);
+                    }
+                    "push" => {
+                        //                        println!("{}", body_content);
+                        let pool = ThreadPool::new();
+                        pool.spawn(lazy(move || {
+                            poll_fn(move || {
+                                blocking(|| {
+                                    println!("Processing push webhook");
+                                    let push: octokit::PushPayload =
+                                        serde_json::from_str(body_content.as_str()).unwrap();
+                                    println!("parsed data: {:?}", push);
+                                    println!("before {}, after: {}", push.before, push.after);
+
+                                    let check_run = handle_push_event(push).wait();
+                                })
+                                .map_err(|_| panic!("the threadpool shut down"))
+                            })
+                        }));
+                        // Wait for the task we just spawned to complete.
+                        println!("Waiting for shutdown");
+                        pool.shutdown_on_idle().wait().unwrap();
+                        println!("Done shutting down");
+                    }
+                    "check_suite" => {
+                        println!("Ignoring check suite event");
+                    }
+                    _ => {
+                        println!("Unknown event type: {}", event_type);
+                        println!("{}", body_content);
+                    }
+                }
 
                 // move data to background job
 
+                // respond
                 let res = create_empty_response(&state, StatusCode::OK);
                 future::ok((state, res))
             }
@@ -164,7 +215,14 @@ fn webhook_handler(mut state: State) -> Box<HandlerFuture> {
 fn auth_callback(state: State) -> (State, &'static str) {
     (state, HELLO_WORLD)
 }
+/// /github/setup?installation_id=1841686&setup_action=install
 fn setup(state: State) -> (State, &'static str) {
+    // TODO extract installation_id and setup_action from query parameters
+    print_request_elements(&state);
+    // redirect back to github installation???
+    // https://docs.rs/gotham/0.4.0/gotham/helpers/http/response/fn.create_temporary_redirect.html
+    // let resp = create_temporary_redirect(&state, "/quick-detour");
+    //    (state, resp)
     (state, HELLO_WORLD)
 }
 fn router() -> Router {
@@ -174,7 +232,7 @@ fn router() -> Router {
         route.scope("/github", |route| {
             route.post("/events").to(webhook_handler);
             route.post("/auth/callback").to(auth_callback);
-            route.post("/setup").to(setup);
+            route.get("/setup").to(setup);
         });
     })
 }
