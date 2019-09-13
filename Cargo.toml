@@ -6,9 +6,12 @@ edition = "2018"
 
 [dependencies]
 gotham = "0.4.0"
+gotham_derive = "0.4.0"
 hyper = "0.12"
 mime = "0.3"
+serde = "1.0"
 serde_json = "1.0"
+serde_derive = "1.0"
 futures = "0.1"
 octokit = { path = "../octokit" }
 tokio-threadpool = "0.1.15"

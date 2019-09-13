@@ -1,13 +1,18 @@
+#[macro_use]
+extern crate gotham_derive;
+#[macro_use]
+extern crate serde_derive;
+
 use futures::{future, Future, Stream};
 use gotham::handler::{HandlerFuture, IntoHandlerError};
 use gotham::helpers::http::response::create_empty_response;
+use gotham::helpers::http::response::create_temporary_redirect;
 use gotham::router::builder::{build_simple_router, DefineSingleRoute, DrawRoutes};
 use gotham::router::Router;
 use gotham::state::{FromState, State};
 use hyper::{Body, HeaderMap, Method, Response, StatusCode, Uri, Version};
 
 use futures::future::{lazy, poll_fn};
-use serde_json;
 use std::env;
 use std::option::Option;
 use tokio_threadpool::{blocking, ThreadPool};
@@ -173,15 +178,21 @@ fn webhook_handler(mut state: State) -> Box<HandlerFuture> {
 fn auth_callback(state: State) -> (State, &'static str) {
     (state, HELLO_WORLD)
 }
+
+#[derive(Debug, Deserialize, StateData, StaticResponseExtender)]
+struct SetupQueryParams {
+    installation_id: u64,
+    setup_action: String,
+}
+
 /// /github/setup?installation_id=1841686&setup_action=install
-fn setup(state: State) -> (State, &'static str) {
-    // TODO extract installation_id and setup_action from query parameters
+fn setup(mut state: State) -> (State, Response<Body>) {
+    let query_params = SetupQueryParams::take_from(&mut state);
+    println!("received query params: {:?}", query_params);
+
     print_request_elements(&state);
-    // redirect back to github installation???
-    // https://docs.rs/gotham/0.4.0/gotham/helpers/http/response/fn.create_temporary_redirect.html
-    // let resp = create_temporary_redirect(&state, "/quick-detour");
-    //    (state, resp)
-    (state, HELLO_WORLD)
+    let resp = create_temporary_redirect(&state, "/replace-me-with-post-setup-url");
+    (state, resp)
 }
 fn router() -> Router {
     build_simple_router(|route| {
@@ -190,7 +201,10 @@ fn router() -> Router {
         route.scope("/github", |route| {
             route.post("/events").to(webhook_handler);
             route.post("/auth/callback").to(auth_callback);
-            route.get("/setup").to(setup);
+            route
+                .get("/setup")
+                .with_query_string_extractor::<SetupQueryParams>()
+                .to(setup);
         });
     })
 }
