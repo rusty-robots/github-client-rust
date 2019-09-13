@@ -1,3 +1,4 @@
+// macros required by gotham's query string parsing
 #[macro_use]
 extern crate gotham_derive;
 #[macro_use]
@@ -16,7 +17,6 @@ use futures::future::{lazy, poll_fn};
 use std::env;
 use std::option::Option;
 use tokio_threadpool::{blocking, ThreadPool};
-const HELLO_WORLD: &'static str = "Hello World!";
 
 // TODO: make this return Result<GithubEvent, HeaderMapErrorXXX>
 ///  Example headers:
@@ -71,6 +71,7 @@ fn home(state: State) -> (State, Response<Body>) {
 fn handle_push_event(
     push: octokit::PushPayload,
 ) -> impl Future<Item = octokit::CheckRun, Error = Box<dyn std::error::Error + 'static>> {
+    // FIXME replace pseudo future and fake .then calls with normal blocking code
     future::ok(1)
         .and_then(|_| {
             let key_path = env::var("GITHUB_PRIVATE_KEY_PATH")
@@ -176,7 +177,8 @@ fn webhook_handler(mut state: State) -> Box<HandlerFuture> {
 }
 
 fn auth_callback(state: State) -> (State, &'static str) {
-    (state, HELLO_WORLD)
+    let dummy_response = "Hello World!";
+    (state, dummy_response)
 }
 
 #[derive(Debug, Deserialize, StateData, StaticResponseExtender)]
