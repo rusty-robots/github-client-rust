@@ -89,21 +89,24 @@ fn handle_push_event(
 fn webhook_handler(mut state: State) -> Box<HandlerFuture> {
     print_request_elements(&state);
     //  may outlive borrowed value `event_type`, ...
-    // let secret = env::var("GITHUB_WEBHOOK_SECRET").expect("GITHUB_WEBHOOK_SECRET is required but not set.");
-    // let signature = get_payload_signature(&state);
-    // let event_type = extract_event_type(&state) .expect("Unable to extract event type (X-EVENT-TYPE)");
+    let secret =
+        env::var("GITHUB_WEBHOOK_SECRET").expect("GITHUB_WEBHOOK_SECRET is required but not set.");
+    let signature = get_payload_signature(&state);
+    let event_type =
+        extract_event_type(&state).expect("Unable to extract event type (X-EVENT-TYPE)");
+    println!("Event type is: {} ", event_type);
 
     let f = Body::take_from(&mut state)
         .concat2()
         .then(|full_body| match full_body {
             Ok(valid_body) => {
                 // parse body
-                let secret = env::var("GITHUB_WEBHOOK_SECRET")
-                    .expect("GITHUB_WEBHOOK_SECRET is required but not set.");
-                let signature = get_payload_signature(&state);
-                let event_type = extract_event_type(&state)
-                    .expect("Unable to extract event type (X-EVENT-TYPE)");
                 let body_content = String::from_utf8(valid_body.to_vec()).unwrap();
+                // FIXME can we avoid these borrow-check hacks?
+                // is there a better way to fix: "may outlive borrowed value"?
+                let event_type = event_type;
+                let signature = signature;
+                let secret = secret;
 
                 // validate  signature
                 let signature_is_valid =
@@ -113,11 +116,10 @@ fn webhook_handler(mut state: State) -> Box<HandlerFuture> {
                 } else {
                     println!("BOO, signature is NOT valid");
                 }
-                // do stuff
-                println!("Event type is: {} ", event_type);
+
                 match event_type.as_str() {
                     "installation" => {
-                        println!("{}", body_content);
+                        //                        println!("{}", body_content);
                         println!("Processing installation webhook");
                         let data: octokit::InstallationPayload =
                             serde_json::from_str(body_content.as_str()).unwrap();
