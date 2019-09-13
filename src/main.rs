@@ -7,18 +7,29 @@ use gotham::state::{FromState, State};
 use hyper::{Body, HeaderMap, Method, Response, StatusCode, Uri, Version};
 
 use futures::future::{lazy, poll_fn};
-use tokio_threadpool::{blocking, ThreadPool};
-
 use serde_json;
-
 use std::env;
 use std::option::Option;
-
-use openssl::hash::MessageDigest;
-use openssl::memcmp;
-use openssl::sign::Signer;
-
+use tokio_threadpool::{blocking, ThreadPool};
 const HELLO_WORLD: &'static str = "Hello World!";
+
+// TODO: make this return Result<GithubEvent, HeaderMapErrorXXX>
+///  Example headers:
+///  "x-github-event": "integration_installation",
+///  "x-github-delivery": "95765be0-d2e0-11e9-966b-74649f0cda10",
+fn extract_event_type(state: &State) -> Option<String> {
+    let headers = HeaderMap::borrow_from(&state);
+    headers
+        .get(octokit::webhooks::EVENT_HEADER_NAME)
+        .map(|val| val.to_str().unwrap().to_string())
+}
+
+fn get_payload_signature(state: &State) -> Option<String> {
+    let headers = HeaderMap::borrow_from(&state);
+    headers
+        .get(octokit::webhooks::SIGNATURE_HEADER_NAME)
+        .map(|val| val.to_str().unwrap().to_string())
+}
 
 /// Extract the main elements of the request except for the `Body`
 fn print_request_elements(state: &State) {
@@ -44,62 +55,6 @@ fn home(state: State) -> (State, Response<Body>) {
     get_handler(state)
 }
 
-// TODO: make this return Result<GithubEvent, HeaderMapErrorThing>
-///  Example headers:
-///  "x-github-event": "integration_installation",
-///  "x-github-delivery": "95765be0-d2e0-11e9-966b-74649f0cda10",
-///  "content-type": "application/json",
-fn extract_event_type(state: &State) -> Option<String> {
-    let headers = HeaderMap::borrow_from(&state);
-    headers
-        .get("X-GITHUB-EVENT")
-        .map(|val| val.to_str().unwrap().to_string())
-}
-
-fn get_payload_signature(state: &State) -> Option<String> {
-    let headers = HeaderMap::borrow_from(&state);
-    headers
-        .get("X-HUB-SIGNATURE")
-        .map(|val| val.to_str().unwrap().to_string())
-}
-
-///  Example signature header
-///  "x-hub-signature": "sha1=4b4a1c9a70dc40caf22099fb2d62a283dedd4614"
-fn verify_payload_signature(signature: &Option<String>, secret: &String, body: &String) -> bool {
-    let secret = secret.as_bytes();
-    let body = body.as_bytes();
-
-    match signature {
-        Some(sig) => {
-            // discard the 'sha1='-prefix
-            let sighex = &sig[5..];
-            // decode sha1 has hex bytes
-            let sigbytes = hex::decode(sighex).expect("Decoding failed");
-
-            // Create a PKey
-            let key = openssl::pkey::PKey::hmac(secret).unwrap();
-
-            // Compute the HMAC
-            let mut signer = Signer::new(MessageDigest::sha1(), &key).unwrap();
-            signer.update(body).unwrap();
-            let hmac = signer.sign_to_vec().unwrap();
-
-            println!("signature: sha1={:?}", sighex);
-            println!("bytes: {:?}", sigbytes);
-            println!("hmac is: {:?}", hmac);
-            //            println!("hmac len: {}, sig len: {}", hmac.len(), sigbytes.len());
-
-            let valid = memcmp::eq(&hmac, &sigbytes);
-            println!("validity is: {:?}", valid);
-            valid
-        }
-        None => false,
-    }
-}
-
-/// Installation Integration
-/// Installation
-///
 /// When creating a new push with branch we expect:
 /// * create ref: branch
 /// * push to branch
@@ -134,9 +89,9 @@ fn handle_push_event(
 fn webhook_handler(mut state: State) -> Box<HandlerFuture> {
     print_request_elements(&state);
     //  may outlive borrowed value `event_type`, ...
-    //  let event_type = extract_event_type(&state).expect("Unable to extract event type (X-EVENT-TYPE)");
-    //  let secret = env::var("GITHUB_WEBHOOK_SECRET")
-    //  let signature = get_payload_signature(&state);
+    // let secret = env::var("GITHUB_WEBHOOK_SECRET").expect("GITHUB_WEBHOOK_SECRET is required but not set.");
+    // let signature = get_payload_signature(&state);
+    // let event_type = extract_event_type(&state) .expect("Unable to extract event type (X-EVENT-TYPE)");
 
     let f = Body::take_from(&mut state)
         .concat2()
@@ -146,19 +101,19 @@ fn webhook_handler(mut state: State) -> Box<HandlerFuture> {
                 let secret = env::var("GITHUB_WEBHOOK_SECRET")
                     .expect("GITHUB_WEBHOOK_SECRET is required but not set.");
                 let signature = get_payload_signature(&state);
+                let event_type = extract_event_type(&state)
+                    .expect("Unable to extract event type (X-EVENT-TYPE)");
                 let body_content = String::from_utf8(valid_body.to_vec()).unwrap();
 
                 // validate  signature
                 let signature_is_valid =
-                    verify_payload_signature(&signature, &secret, &body_content);
+                    octokit::webhooks::verify_payload_signature(&signature, &secret, &body_content);
                 if signature_is_valid {
                     println!("YESS, signature is valid");
                 } else {
                     println!("BOO, signature is NOT valid");
                 }
                 // do stuff
-                let event_type = extract_event_type(&state)
-                    .expect("Unable to extract event type (X-EVENT-TYPE)");
                 println!("Event type is: {} ", event_type);
                 match event_type.as_str() {
                     "installation" => {
@@ -182,6 +137,7 @@ fn webhook_handler(mut state: State) -> Box<HandlerFuture> {
                                     println!("before {}, after: {}", push.before, push.after);
 
                                     let check_run = handle_push_event(push).wait();
+                                    println!("check_run created: {:?}", check_run);
                                 })
                                 .map_err(|_| panic!("the threadpool shut down"))
                             })
